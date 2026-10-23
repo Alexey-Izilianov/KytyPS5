@@ -405,6 +405,54 @@ void TestAggregatedStats(const std::filesystem::path &directory) {
         "reloaded stat continues aggregation");
 }
 
+void TestReportedProgress(const std::filesystem::path &directory) {
+  const auto trophy_path = directory / "trophy02.ucp";
+  WritePackage(
+      trophy_path,
+      {{"tropconf.json", R"({"defaultLanguage":"en-US","trophies":[
+			{"id":"0","grade":"P"},
+			{"id":"9","grade":"B","unlockCondition":{"targetValue":"8","progressive":true}},
+			{"id":"10","grade":"B"}
+		]})"},
+       {"tropmeta_en-US.json",
+        R"({"metadata":{"titleMetadata":{"name":"Progress"},"trophyMetadata":[]}})"}});
+  const auto package = Trophies::LoadPackage(trophy_path, 1);
+  Check(package.trophies.size() == 3, "load progressive trophy without stat");
+
+  Trophies::UnlockData unlocks;
+  bool changed = false;
+  const auto &trophy = package.trophies.at(9);
+  Check(!Trophies::TrophyProgress(trophy, unlocks),
+        "no progress before the first report");
+  Check(!Trophies::UpdateTrophyProgress(package, 9, 1, unlocks, changed) &&
+            changed && Trophies::TrophyProgress(trophy, unlocks) == 1,
+        "first report records progress");
+  Check(!Trophies::UpdateTrophyProgress(package, 9, 3, unlocks, changed) &&
+            changed && Trophies::TrophyProgress(trophy, unlocks) == 3,
+        "higher report raises progress");
+  Check(!Trophies::UpdateTrophyProgress(package, 9, 2, unlocks, changed) &&
+            !changed && Trophies::TrophyProgress(trophy, unlocks) == 3,
+        "lower report is ignored");
+  Check(!Trophies::UpdateTrophyProgress(package, 10, 5, unlocks, changed) &&
+            !Trophies::UpdateTrophyProgress(package, 0, 5, unlocks, changed) &&
+            !Trophies::UpdateTrophyProgress(package, 42, 5, unlocks, changed) &&
+            !changed && unlocks.progress.size() == 1,
+        "only progressive trophies take reported progress");
+
+  const auto path = Trophies::UnlocksPath(directory, "PPSA09809", 1000, 0);
+  Check(Trophies::SaveUnlockData(path, unlocks) &&
+            Trophies::LoadUnlockData(path).progress == unlocks.progress,
+        "persist reported progress");
+
+  Check(Trophies::UpdateTrophyProgress(package, 9, 9, unlocks, changed) &&
+            Trophies::TrophyProgress(trophy, unlocks) == 8,
+        "reaching the target unlocks and caps progress");
+  unlocks.unlocked.insert(9);
+  Check(!Trophies::UpdateTrophyProgress(package, 9, 10, unlocks, changed) &&
+            !changed,
+        "unlocked trophies stop taking progress");
+}
+
 void TestProgress(const std::filesystem::path &directory) {
   const auto package = MakePackage(directory);
   Trophies::UnlockData unlocks;
@@ -464,6 +512,7 @@ int main() {
   TempDirectory directory;
   TestEventExtraction(directory.Path());
   TestAggregatedStats(directory.Path());
+  TestReportedProgress(directory.Path());
   TestProgress(directory.Path());
   TestUnlockPersistence(directory.Path());
   std::printf("TrophySystemTests: all cases passed\n");
